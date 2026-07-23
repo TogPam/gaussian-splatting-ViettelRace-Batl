@@ -228,11 +228,18 @@ def readColmapSceneInfo(path, images, depths, eval, train_test_exp, llffhold=8):
             xyz, rgb, _ = read_points3D_binary(bin_path)
         except:
             xyz, rgb, _ = read_points3D_text(txt_path)
-        storePly(ply_path, xyz, rgb)
-    try:
-        pcd = fetchPly(ply_path)
-    except:
-        pcd = None
+        try:
+            storePly(ply_path, xyz, rgb)
+            pcd = fetchPly(ply_path)
+        except Exception as e:
+            print(f"[WARNING] Cannot store PLY to {ply_path} (likely read-only Kaggle input). Initializing PCD in memory.")
+            normals = np.zeros_like(xyz)
+            pcd = BasicPointCloud(points=xyz, colors=rgb / 255.0, normals=normals)
+    else:
+        try:
+            pcd = fetchPly(ply_path)
+        except:
+            pcd = None
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,
