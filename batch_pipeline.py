@@ -16,7 +16,7 @@ def create_submission_zip(submission_dir, zip_name="submission.zip"):
     with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for root, dirs, files in os.walk(submission_dir):
             for file in files:
-                if file.endswith('.png') or file.endswith('.jpg'):
+                if file.lower().endswith('.png') or file.lower().endswith('.jpg'):
                     full_path = os.path.join(root, file)
                     rel_path = os.path.relpath(full_path, submission_dir)
                     zipf.write(full_path, rel_path)
