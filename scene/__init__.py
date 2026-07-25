@@ -49,8 +49,13 @@ class Scene:
             assert False, "Could not recognize scene type!"
 
         if not self.loaded_iter:
-            with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
-                dest_file.write(src_file.read())
+            if os.path.exists(scene_info.ply_path):
+                with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
+                    dest_file.write(src_file.read())
+            else:
+                from scene.dataset_readers import storePly
+                pcd = scene_info.point_cloud
+                storePly(os.path.join(self.model_path, "input.ply"), pcd.points, pcd.colors * 255.0)
             json_cams = []
             camlist = []
             if scene_info.test_cameras:
