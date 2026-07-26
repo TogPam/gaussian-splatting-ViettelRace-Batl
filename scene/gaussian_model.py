@@ -417,10 +417,10 @@ class GaussianModel:
 
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
         means =torch.zeros((stds.size(0), 3),device="cuda")
-        samples = torch.normal(mean=means, std=stds)
+        samples = torch.normal(mean=means, std=stds*0.7)
         rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N,1,1)
         new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.8*N))
+        new_scaling = self.scaling_inverse_activation(self.get_scaling[selected_pts_mask].repeat(N,1) / (0.65*N))
         new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
         new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
