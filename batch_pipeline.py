@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--max_scenes", type=int, default=None, help="Limit number of scenes to process for fast local testing")
     parser.add_argument("--sh_degree", type=int, default=3, help="Spherical Harmonics degree (default: 3, local test: 1 or 2)")
     parser.add_argument("--resolution", type=int, default=1, help="Downscale resolution factor (-r 2, -r 4, -r 8). Use 4 or 8 for weak GPUs.")
+    parser.add_argument("--densify_grad_threshold", type=float, default=0.0002, help="Threshold for densification (default: 0.0002. Use 0.0006 for low VRAM max resolution).")
     parser.add_argument("--skip_train", action="store_true", help="Skip training step if model already exists")
     
     args = parser.parse_args()
@@ -86,7 +87,8 @@ def main():
                 "-r", str(args.resolution),
                 "--sh_degree", str(args.sh_degree),
                 "--iterations", str(args.iterations),
-                "--checkpoint_iterations", str(args.iterations)
+                "--checkpoint_iterations", str(args.iterations),
+                "--densify_grad_threshold", str(args.densify_grad_threshold)
             ]
             run_cmd(train_cmd)
 
