@@ -139,10 +139,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Tính LPIPS loss (so sánh ảnh dự đoán và ground truth)
         # LPIPS yêu cầu ảnh ở khoảng [-1,1] nếu dùng VGG, nên cần chuẩn hóa lại
         # Ở đây ảnh đang trong [0,1], nhân 2 trừ 1 để chuyển sang [-1,1]
-        lpips_loss = lpips_fn(image * 2 - 1, gt_image * 2 - 1).mean()
-
-        # Hàm loss tổng: kết hợp L1, SSIM và LPIPS với các trọng số cho trước
-        loss = Ll1 + lambda_ssim * (1.0 - ssim_val) + lambda_lpips * lpips_loss
+        # Bỏ qua LPIPS ở các iteration đầu (< 30000) để tăng tốc độ train
+        if iteration > 30000:
+            lpips_loss = lpips_fn((image * 2 - 1).unsqueeze(0), (gt_image * 2 - 1).unsqueeze(0)).mean()
+            loss = Ll1 + lambda_ssim * (1.0 - ssim_val) + lambda_lpips * lpips_loss
+        else:
+            loss = Ll1 + lambda_ssim * (1.0 - ssim_val)
+        # ===============================================================
 
         # Depth regularization (nếu có depth từ monocular)
         Ll1depth_pure = 0.0
