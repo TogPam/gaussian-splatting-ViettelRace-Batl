@@ -41,8 +41,9 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
+# [SỬA LỖI 3] Thêm tham số override_lr vào chữ ký hàm training
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from,
-             lambda_ssim=0.2, lambda_lpips=0.02):
+             lambda_ssim=0.2, lambda_lpips=0.02, override_lr=0.0):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
@@ -55,6 +56,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint, weights_only=False)
         gaussians.restore(model_params, opt)
+
+    # [SỬA LỖI 3] Dùng biến override_lr được truyền vào thay vì opt.override_lr
+    if override_lr > 0:
+        for param_group in gaussians.optimizer.param_groups:
+            param_group['lr'] *= override_lr
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -70,9 +76,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
 
-    # Khởi tạo mô hình LPIPS một lần bên ngoài vòng lặp để tránh tốn bộ nhớ và thời gian
+    # Khởi tạo mô hình LPIPS một lần bên ngoài vòng lặp
     lpips_fn = lpips.LPIPS(net='vgg').cuda()
-    lpips_fn.eval()  # Đặt ở chế độ đánh giá, không tính gradient cho các tham số của LPIPS
+    lpips_fn.eval()  
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -96,11 +102,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
-        # Cứ mỗi 1000 iteration, tăng bậc của SH lên (tối đa bằng sh_degree)
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Chọn ngẫu nhiên một camera từ tập huấn luyện
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
@@ -108,7 +112,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
         vind = viewpoint_indices.pop(rand_idx)
 
-        # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
 
@@ -124,30 +127,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
-        # Ảnh ground truth
         gt_image = viewpoint_cam.original_image.cuda()
 
-        # Tính L1 loss
         Ll1 = l1_loss(image, gt_image)
 
-        # Tính SSIM (dùng fused nếu có, nếu không dùng hàm thường)
         if FUSED_SSIM_AVAILABLE:
             ssim_val = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
             ssim_val = ssim(image, gt_image)
 
-        # Tính LPIPS loss (so sánh ảnh dự đoán và ground truth)
-        # LPIPS yêu cầu ảnh ở khoảng [-1,1] nếu dùng VGG, nên cần chuẩn hóa lại
-        # Ở đây ảnh đang trong [0,1], nhân 2 trừ 1 để chuyển sang [-1,1]
-        # Bỏ qua LPIPS ở các iteration đầu (< 30000) để tăng tốc độ train
+        # [SỬA LỖI 1 & 4] Sửa lại thụt lề và biến 3000 thành 30000
+        lambda_lpips_current = 0.0
         if iteration > 30000:
-            lpips_loss = lpips_fn((image * 2 - 1).unsqueeze(0), (gt_image * 2 - 1).unsqueeze(0)).mean()
-            loss = Ll1 + lambda_ssim * (1.0 - ssim_val) + lambda_lpips * lpips_loss
+            lambda_lpips_current = min(lambda_lpips, lambda_lpips * (iteration - 30000) / 15000)
+            lpips_loss = lpips_fn((image*2-1).unsqueeze(0), (gt_image*2-1).unsqueeze(0)).mean()
+            loss = Ll1 + lambda_ssim * (1.0 - ssim_val) + lambda_lpips_current * lpips_loss
         else:
             loss = Ll1 + lambda_ssim * (1.0 - ssim_val)
         # ===============================================================
 
-        # Depth regularization (nếu có depth từ monocular)
         Ll1depth_pure = 0.0
         if depth_l1_weight(iteration) > 0 and viewpoint_cam.depth_reliable:
             invDepth = render_pkg["depth"]
@@ -162,11 +160,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1depth = 0
 
         loss.backward()
-
         iter_end.record()
 
         with torch.no_grad():
-            # Cập nhật thanh tiến trình
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
@@ -176,13 +172,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            # Log và lưu định kỳ
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background, 1., SPARSE_ADAM_AVAILABLE, None, dataset.train_test_exp), dataset.train_test_exp)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
 
-            # Tăng mật độ Gaussian (densification)
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -194,7 +188,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
-            # Bước tối ưu hóa
             if iteration < opt.iterations:
                 gaussians.exposure_optimizer.step()
                 gaussians.exposure_optimizer.zero_grad(set_to_none = True)
@@ -284,9 +277,12 @@ if __name__ == "__main__":
     parser.add_argument('--disable_viewer', action='store_true', default=False)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
-    # Thêm tham số trọng số loss từ dòng lệnh
     parser.add_argument("--lambda_ssim", type=float, default=0.2, help="Trọng số cho thành phần SSIM trong loss (1 - SSIM)")
     parser.add_argument("--lambda_lpips", type=float, default=0.02, help="Trọng số cho LPIPS loss")
+    
+    # [SỬA LỖI 2] Di chuyển lệnh add_argument override_lr lên TRƯỚC parse_args
+    parser.add_argument("--override_lr", type=float, default=0.0, help="Giảm learning rate bằng cách nhân với hệ số này (0 < x < 1)")
+    
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -297,7 +293,9 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    
+    # [SỬA LỖI 3] Truyền tham số override_lr=args.override_lr vào training()
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from,
-             lambda_ssim=args.lambda_ssim, lambda_lpips=args.lambda_lpips)
+             lambda_ssim=args.lambda_ssim, lambda_lpips=args.lambda_lpips, override_lr=args.override_lr)
 
     print("\nTraining complete.")
