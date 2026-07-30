@@ -50,6 +50,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    
+    # --- THÊM MỚI: Khởi tạo tham số học sương mù (Dehaze) ---
+    fog_beta = torch.nn.Parameter(torch.tensor([0.05], dtype=torch.float32, device="cuda"))
+    fog_A = torch.nn.Parameter(torch.tensor([0.8, 0.8, 0.8], dtype=torch.float32, device="cuda"))
+    fog_optimizer = torch.optim.Adam([fog_beta, fog_A], lr=0.005)
+    # ---------------------------------------------------------
+
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint, weights_only=False)
         gaussians.restore(model_params, opt)
@@ -109,21 +116,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        clean_image = render_pkg["render"]
+        depth_map = render_pkg["depth"]
+        viewspace_point_tensor, visibility_filter, radii = render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
-            image *= alpha_mask
+            clean_image *= alpha_mask
+
+        # --- THÊM MỚI: Áp dụng Mô hình Tán xạ Khí quyển ---
+        t = torch.exp(-torch.abs(fog_beta) * depth_map)
+        A_view = fog_A.view(3, 1, 1).clamp(0.0, 1.0)
+        foggy_image = clean_image * t + A_view * (1 - t)
+        # ----------------------------------------------------
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
+        Ll1 = l1_loss(foggy_image, gt_image)
         if FUSED_SSIM_AVAILABLE:
-            ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+            ssim_value = fused_ssim(foggy_image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
-            ssim_value = ssim(image, gt_image)
+            ssim_value = ssim(foggy_image, gt_image)
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value) + 0.005 * torch.abs(fog_beta)
 
         # Depth regularization
         Ll1depth_pure = 0.0
@@ -177,6 +192,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.exposure_optimizer.step()
                 gaussians.exposure_optimizer.zero_grad(set_to_none = True)
+                
+                # --- THÊM MỚI: Cập nhật biến sương mù ---
+                fog_optimizer.step()
+                fog_optimizer.zero_grad(set_to_none = True)
+                # ----------------------------------------
+
                 if use_sparse_adam:
                     visible = radii > 0
                     gaussians.optimizer.step(visible, radii.shape[0])
